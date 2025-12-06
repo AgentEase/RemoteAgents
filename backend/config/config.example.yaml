@@ -1,0 +1,44 @@
+# Remote Agent Terminal Configuration Example
+# Copy this file to config.yaml and modify as needed
+
+server:
+  # Server port
+  port: 8080
+  # Host to bind to (0.0.0.0 for all interfaces)
+  host: "0.0.0.0"
+
+database:
+  # SQLite database file path
+  path: "./data/sessions.db"
+
+session:
+  # Maximum number of concurrent sessions per user
+  max_per_user: 10
+  # Maximum total concurrent sessions
+  max_total: 100
+  # Ring buffer size in bytes (for hot restore)
+  ring_buffer_size: 1048576  # 1MB
+
+logging:
+  # Directory for Asciinema log files
+  log_dir: "./logs/sessions"
+  # Log level: debug, info, warn, error
+  level: "info"
+
+security:
+  # JWT secret for token signing (change in production!)
+  jwt_secret: "change-me-in-production"
+  # Token expiration time in hours
+  token_expiry_hours: 24
+  # Allowed executable commands (whitelist)
+  allowed_commands:
+    - "/bin/bash"
+    - "/bin/sh"
+    - "/usr/bin/python3"
+    - "claude"
+    - "codex"
+
+pty:
+  # Default terminal size
+  default_rows: 40
+  default_cols: 120
