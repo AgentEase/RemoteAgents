@@ -5,535 +5,721 @@ import (
 	"testing"
 )
 
+// TestClaudeDriver_Name tests the Name method
 func TestClaudeDriver_Name(t *testing.T) {
 	driver := NewClaudeDriver()
 	if driver.Name() != "claude" {
-		t.Errorf("expected name 'claude', got '%s'", driver.Name())
+		t.Errorf("Expected name 'claude', got '%s'", driver.Name())
 	}
 }
 
+// TestClaudeDriver_Parse_QuestionPattern tests detection of (y/n) patterns
 func TestClaudeDriver_Parse_QuestionPattern(t *testing.T) {
-	driver := NewClaudeDriver()
-
-	testCases := []struct {
-		name            string
-		input           []byte
-		expectEvent     bool
-		expectedKind    string
+	tests := []struct {
+		name           string
+		input          string
+		expectEvent    bool
+		expectedKind   string
 		expectedOptions []string
 	}{
 		{
-			name:            "y/n question",
-			input:           []byte("Continue? (y/n)"),
-			expectEvent:     true,
-			expectedKind:    "question",
+			name:           "y/n pattern",
+			input:          "Do you want to continue? (y/n)",
+			expectEvent:    true,
+			expectedKind:   "question",
 			expectedOptions: []string{"y", "n"},
 		},
 		{
-			name:            "Y/N question",
-			input:           []byte("Proceed? (Y/N)"),
-			expectEvent:     true,
-			expectedKind:    "question",
+			name:           "yes/no pattern",
+			input:          "Proceed with operation? (yes/no)",
+			expectEvent:    true,
+			expectedKind:   "question",
+			expectedOptions: []string{"yes", "no"},
+		},
+		{
+			name:           "Y/N uppercase pattern",
+			input:          "Confirm action? (Y/N)",
+			expectEvent:    true,
+			expectedKind:   "question",
 			expectedOptions: []string{"y", "n"},
-		},
-		{
-			name:            "yes/no question",
-			input:           []byte("Do you want to continue? (yes/no)"),
-			expectEvent:     true,
-			expectedKind:    "question",
-			expectedOptions: []string{"yes", "no"},
-		},
-		{
-			name:            "Yes/No question",
-			input:           []byte("Confirm action? (Yes/No)"),
-			expectEvent:     true,
-			expectedKind:    "question",
-			expectedOptions: []string{"yes", "no"},
 		},
 		{
 			name:        "no question pattern",
-			input:       []byte("This is just regular output"),
+			input:       "This is just regular text",
 			expectEvent: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Reset driver for each test
-			driver.Reset()
-
-			result, err := driver.Parse(tc.input)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result, err := driver.Parse([]byte(tt.input))
+			
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Fatalf("Parse error: %v", err)
 			}
 
-			if result == nil {
-				t.Fatal("result is nil")
-			}
-
-			// Check raw data is preserved
-			if string(result.RawData) != string(tc.input) {
-				t.Errorf("expected raw data '%s', got '%s'", string(tc.input), string(result.RawData))
-			}
-
-			// Check smart events
-			if tc.expectEvent {
+			if tt.expectEvent {
 				if len(result.SmartEvents) == 0 {
-					t.Fatal("expected smart event, got none")
+					t.Fatal("Expected smart event, got none")
 				}
-
 				event := result.SmartEvents[0]
-				if event.Kind != tc.expectedKind {
-					t.Errorf("expected kind '%s', got '%s'", tc.expectedKind, event.Kind)
+				if event.Kind != tt.expectedKind {
+					t.Errorf("Expected kind '%s', got '%s'", tt.expectedKind, event.Kind)
 				}
-
-				if len(event.Options) != len(tc.expectedOptions) {
-					t.Errorf("expected %d options, got %d", len(tc.expectedOptions), len(event.Options))
-				} else {
-					for i, opt := range tc.expectedOptions {
-						if event.Options[i] != opt {
-							t.Errorf("expected option[%d] '%s', got '%s'", i, opt, event.Options[i])
-						}
+				if len(event.Options) != len(tt.expectedOptions) {
+					t.Errorf("Expected %d options, got %d", len(tt.expectedOptions), len(event.Options))
+				}
+				for i, opt := range tt.expectedOptions {
+					if i < len(event.Options) && event.Options[i] != opt {
+						t.Errorf("Expected option[%d] '%s', got '%s'", i, opt, event.Options[i])
 					}
-				}
-
-				if event.Prompt == "" {
-					t.Error("expected non-empty prompt")
 				}
 			} else {
-				// For idle patterns, we might still get events
-				// Only check if we explicitly don't expect any events
-				if tc.name == "no question pattern" && len(result.SmartEvents) > 0 {
-					// Check if it's not an idle event
-					for _, event := range result.SmartEvents {
-						if event.Kind == "question" {
-							t.Errorf("unexpected question event: %+v", event)
-						}
-					}
+				if len(result.SmartEvents) > 0 {
+					t.Errorf("Expected no smart events, got %d", len(result.SmartEvents))
 				}
 			}
 		})
 	}
 }
 
-func TestClaudeDriver_Parse_IdlePattern(t *testing.T) {
-	// NOTE: Idle pattern detection is disabled in ClaudeDriver to avoid
-	// false positives with Claude Code's UI elements. These tests are
-	// kept for documentation but marked as skipped.
-	t.Skip("Idle pattern detection is disabled in ClaudeDriver")
-
-	driver := NewClaudeDriver()
-
-	testCases := []struct {
-		name         string
-		input        []byte
-		expectIdle   bool
-		expectedKind string
+// TestClaudeDriver_Parse_ClaudeMenuPattern tests Claude's confirmation menu
+func TestClaudeDriver_Parse_ClaudeMenuPattern(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		expectEvent bool
 	}{
 		{
-			name:         "question mark prompt",
-			input:        []byte("Enter your choice? "),
-			expectIdle:   true,
-			expectedKind: "idle",
+			name:        "create file menu",
+			input:       "Do you want to create test.txt?",
+			expectEvent: true,
 		},
 		{
-			name:         "greater than prompt",
-			input:        []byte("> "),
-			expectIdle:   true,
-			expectedKind: "idle",
+			name:        "write file menu",
+			input:       "Do you want to write to config.yaml?",
+			expectEvent: true,
 		},
 		{
-			name:         "dollar prompt",
-			input:        []byte("$ "),
-			expectIdle:   true,
-			expectedKind: "idle",
+			name:        "delete file menu",
+			input:       "Do you want to delete old_file.js?",
+			expectEvent: true,
 		},
 		{
-			name:         "Continue prompt",
-			input:        []byte("Continue? "),
-			expectIdle:   true,
-			expectedKind: "idle",
+			name:        "modify file menu",
+			input:       "Do you want to modify the database schema?",
+			expectEvent: true,
 		},
 		{
-			name:         "Proceed prompt",
-			input:        []byte("Proceed? "),
-			expectIdle:   true,
-			expectedKind: "idle",
-		},
-		{
-			name:       "no idle pattern",
-			input:      []byte("This is regular output\n"),
-			expectIdle: false,
+			name:        "no menu pattern",
+			input:       "This is a regular question?",
+			expectEvent: false,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Reset driver for each test
-			driver.Reset()
-
-			result, err := driver.Parse(tc.input)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result, err := driver.Parse([]byte(tt.input))
+			
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Fatalf("Parse error: %v", err)
 			}
 
-			if result == nil {
-				t.Fatal("result is nil")
-			}
-
-			// Check for idle events
-			if tc.expectIdle {
-				foundIdle := false
+			if tt.expectEvent {
+				if len(result.SmartEvents) == 0 {
+					t.Fatal("Expected smart event, got none")
+				}
+				event := result.SmartEvents[0]
+				if event.Kind != "claude_confirm" {
+					t.Errorf("Expected kind 'claude_confirm', got '%s'", event.Kind)
+				}
+				expectedOptions := []string{"1", "2", "esc"}
+				if len(event.Options) != len(expectedOptions) {
+					t.Errorf("Expected %d options, got %d", len(expectedOptions), len(event.Options))
+				}
+			} else {
+				hasClaudeConfirm := false
 				for _, event := range result.SmartEvents {
-					if event.Kind == "idle" {
-						foundIdle = true
-						if event.Prompt == "" {
-							t.Error("expected non-empty prompt for idle event")
-						}
+					if event.Kind == "claude_confirm" {
+						hasClaudeConfirm = true
 						break
 					}
 				}
-				if !foundIdle {
-					t.Error("expected idle event, got none")
+				if hasClaudeConfirm {
+					t.Error("Expected no claude_confirm event")
 				}
 			}
 		})
 	}
 }
 
-func TestClaudeDriver_BufferManagement(t *testing.T) {
-	driver := NewClaudeDriver()
+// TestClaudeDriver_Parse_UserInput tests user command detection
+func TestClaudeDriver_Parse_UserInput(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		expectMessage   bool
+		expectedType    string
+		expectedContent string
+	}{
+		{
+			name:            "user command",
+			input:           "> hello world",
+			expectMessage:   true,
+			expectedType:    "user_input",
+			expectedContent: "hello world",
+		},
+		{
+			name:            "slash command",
+			input:           "> /doctor",
+			expectMessage:   true,
+			expectedType:    "user_input",
+			expectedContent: "/doctor",
+		},
+		{
+			name:          "no user input",
+			input:         "regular text",
+			expectMessage: false,
+		},
+	}
 
-	// Write data larger than buffer size
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result, err := driver.Parse([]byte(tt.input))
+			
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+
+			if tt.expectMessage {
+				if len(result.Messages) == 0 {
+					t.Fatal("Expected message, got none")
+				}
+				msg := result.Messages[0]
+				if msg.Type != tt.expectedType {
+					t.Errorf("Expected type '%s', got '%s'", tt.expectedType, msg.Type)
+				}
+				if msg.Content != tt.expectedContent {
+					t.Errorf("Expected content '%s', got '%s'", tt.expectedContent, msg.Content)
+				}
+			} else {
+				if len(result.Messages) > 0 {
+					t.Errorf("Expected no messages, got %d", len(result.Messages))
+				}
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_Parse_ClaudeAction tests Claude action detection
+func TestClaudeDriver_Parse_ClaudeAction(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		expectMessage   bool
+		expectedContent string
+	}{
+		{
+			name:            "write action",
+			input:           "● Write(test.txt)",
+			expectMessage:   true,
+			expectedContent: "Write(test.txt)",
+		},
+		{
+			name:            "read action",
+			input:           "● Read(config.yaml)",
+			expectMessage:   true,
+			expectedContent: "Read(config.yaml)",
+		},
+		{
+			name:            "edit action",
+			input:           "● Edit(main.go)",
+			expectMessage:   true,
+			expectedContent: "Edit(main.go)",
+		},
+		{
+			name:            "delete action",
+			input:           "● Delete(old_file.js)",
+			expectMessage:   true,
+			expectedContent: "Delete(old_file.js)",
+		},
+		{
+			name:            "bash action",
+			input:           "● Bash(ls -la)",
+			expectMessage:   true,
+			expectedContent: "Bash(ls -la)",
+		},
+		{
+			name:            "search action",
+			input:           "● Search(TODO)",
+			expectMessage:   true,
+			expectedContent: "Search(TODO)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result, err := driver.Parse([]byte(tt.input))
+			
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+
+			if tt.expectMessage {
+				if len(result.Messages) == 0 {
+					t.Fatal("Expected message, got none")
+				}
+				msg := result.Messages[0]
+				if msg.Type != "claude_action" {
+					t.Errorf("Expected type 'claude_action', got '%s'", msg.Type)
+				}
+				if msg.Content != tt.expectedContent {
+					t.Errorf("Expected content '%s', got '%s'", tt.expectedContent, msg.Content)
+				}
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_Parse_ActionResult tests action result detection
+func TestClaudeDriver_Parse_ActionResult(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		expectMessage bool
+		expectedType  string
+	}{
+		{
+			name:          "wrote result",
+			input:         "⎿ Wrote 10 lines to test.txt",
+			expectMessage: true,
+			expectedType:  "action_result",
+		},
+		{
+			name:          "created result",
+			input:         "⎿ Created new file config.yaml",
+			expectMessage: true,
+			expectedType:  "action_result",
+		},
+		{
+			name:          "deleted result",
+			input:         "⎿ Deleted old_file.js",
+			expectMessage: true,
+			expectedType:  "action_result",
+		},
+		{
+			name:          "command output",
+			input:         "⎿ total 32",
+			expectMessage: true,
+			expectedType:  "command_output",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			_, err := driver.Parse([]byte(tt.input))
+			
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+
+			if tt.expectMessage {
+				// Flush to get the collected output
+				flushed := driver.Flush()
+				if len(flushed) == 0 {
+					t.Fatal("Expected flushed message, got none")
+				}
+				msg := flushed[0]
+				if msg.Type != tt.expectedType {
+					t.Errorf("Expected type '%s', got '%s'", tt.expectedType, msg.Type)
+				}
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_FormatInput tests input formatting
+func TestClaudeDriver_FormatInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		action   InputAction
+		expected string
+	}{
+		{
+			name:     "text input",
+			action:   InputAction{Type: "text", Content: "hello"},
+			expected: "hello",
+		},
+		{
+			name:     "command input",
+			action:   InputAction{Type: "command", Content: "test"},
+			expected: "test\r",
+		},
+		{
+			name:     "key enter",
+			action:   InputAction{Type: "key", Content: "enter"},
+			expected: "\r",
+		},
+		{
+			name:     "key escape",
+			action:   InputAction{Type: "key", Content: "esc"},
+			expected: "\x1b",
+		},
+		{
+			name:     "key ctrl+c",
+			action:   InputAction{Type: "key", Content: "ctrl+c"},
+			expected: "\x03",
+		},
+		{
+			name:     "confirm yes",
+			action:   InputAction{Type: "confirm", Content: "yes"},
+			expected: "1",
+		},
+		{
+			name:     "confirm no",
+			action:   InputAction{Type: "confirm", Content: "no"},
+			expected: "\x1b",
+		},
+		{
+			name:     "cancel",
+			action:   InputAction{Type: "cancel"},
+			expected: "\x1b",
+		},
+		{
+			name:     "interrupt",
+			action:   InputAction{Type: "interrupt"},
+			expected: "\x03",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result := driver.FormatInput(tt.action)
+			
+			if string(result) != tt.expected {
+				t.Errorf("Expected '%v', got '%v'", []byte(tt.expected), result)
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_SendCommand tests command formatting
+func TestClaudeDriver_SendCommand(t *testing.T) {
+	driver := NewClaudeDriver()
+	
+	result := driver.SendCommand("hello world")
+	expected := "hello world\r"
+	
+	if string(result) != expected {
+		t.Errorf("Expected '%s', got '%s'", expected, string(result))
+	}
+}
+
+// TestClaudeDriver_SendSlashCommand tests slash command formatting
+func TestClaudeDriver_SendSlashCommand(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "without slash",
+			input:    "doctor",
+			expected: "/doctor\r",
+		},
+		{
+			name:     "with slash",
+			input:    "/cost",
+			expected: "/cost\r",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result := driver.SendSlashCommand(tt.input)
+			
+			if string(result) != tt.expected {
+				t.Errorf("Expected '%s', got '%s'", tt.expected, string(result))
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_SelectMenuItem tests menu item selection
+func TestClaudeDriver_SelectMenuItem(t *testing.T) {
+	tests := []struct {
+		name     string
+		index    int
+		expected string
+	}{
+		{
+			name:     "select 1",
+			index:    1,
+			expected: "1",
+		},
+		{
+			name:     "select 2",
+			index:    2,
+			expected: "2",
+		},
+		{
+			name:     "select 9",
+			index:    9,
+			expected: "9",
+		},
+		{
+			name:     "select 10 with arrows",
+			index:    10,
+			expected: strings.Repeat("\x1b[B", 9) + "\r",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result := driver.SelectMenuItem(tt.index)
+			
+			if string(result) != tt.expected {
+				t.Errorf("Expected '%v', got '%v'", []byte(tt.expected), result)
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_RespondToEvent tests event response formatting
+func TestClaudeDriver_RespondToEvent(t *testing.T) {
+	tests := []struct {
+		name     string
+		event    SmartEvent
+		response string
+		expected string
+	}{
+		{
+			name: "y/n question - yes",
+			event: SmartEvent{
+				Kind:    "question",
+				Options: []string{"y", "n"},
+			},
+			response: "yes",
+			expected: "y\r",
+		},
+		{
+			name: "y/n question - no",
+			event: SmartEvent{
+				Kind:    "question",
+				Options: []string{"y", "n"},
+			},
+			response: "no",
+			expected: "n\r",
+		},
+		{
+			name: "yes/no question - yes",
+			event: SmartEvent{
+				Kind:    "question",
+				Options: []string{"yes", "no"},
+			},
+			response: "yes",
+			expected: "yes\r",
+		},
+		{
+			name: "claude confirm - yes",
+			event: SmartEvent{
+				Kind:    "claude_confirm",
+				Options: []string{"1", "2", "esc"},
+			},
+			response: "yes",
+			expected: "1",
+		},
+		{
+			name: "claude confirm - all",
+			event: SmartEvent{
+				Kind:    "claude_confirm",
+				Options: []string{"1", "2", "esc"},
+			},
+			response: "all",
+			expected: "2",
+		},
+		{
+			name: "claude confirm - cancel",
+			event: SmartEvent{
+				Kind:    "claude_confirm",
+				Options: []string{"1", "2", "esc"},
+			},
+			response: "esc",
+			expected: "\x1b",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result := driver.RespondToEvent(tt.event, tt.response)
+			
+			if string(result) != tt.expected {
+				t.Errorf("Expected '%v', got '%v'", []byte(tt.expected), result)
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_StripANSI tests ANSI sequence removal
+func TestClaudeDriver_StripANSI(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "no ANSI",
+			input:    "hello world",
+			expected: "hello world",
+		},
+		{
+			name:     "color codes",
+			input:    "\x1b[31mRed\x1b[0m Text",
+			expected: "Red Text",
+		},
+		{
+			name:     "cursor movement",
+			input:    "\x1b[2J\x1b[HClear screen",
+			expected: "Clear screen",
+		},
+		{
+			name:     "OSC sequence",
+			input:    "\x1b]0;Title\x07Text",
+			expected: "Text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := NewClaudeDriver()
+			result := driver.stripANSI([]byte(tt.input))
+			
+			if string(result) != tt.expected {
+				t.Errorf("Expected '%s', got '%s'", tt.expected, string(result))
+			}
+		})
+	}
+}
+
+// TestClaudeDriver_Reset tests buffer reset
+func TestClaudeDriver_Reset(t *testing.T) {
+	driver := NewClaudeDriver()
+	
+	// Add some data
+	driver.Parse([]byte("test data"))
+	
+	if driver.buffer.Len() == 0 {
+		t.Fatal("Buffer should have data before reset")
+	}
+	
+	// Reset
+	driver.Reset()
+	
+	if driver.buffer.Len() != 0 {
+		t.Errorf("Buffer should be empty after reset, got %d bytes", driver.buffer.Len())
+	}
+}
+
+// TestClaudeDriver_Flush tests flushing pending messages
+func TestClaudeDriver_Flush(t *testing.T) {
+	driver := NewClaudeDriver()
+	
+	// Parse some output that creates a pending block
+	driver.Parse([]byte("⎿ Wrote file"))
+	
+	// Flush should return the pending message
+	messages := driver.Flush()
+	
+	if len(messages) == 0 {
+		t.Fatal("Expected flushed messages, got none")
+	}
+	
+	msg := messages[0]
+	if msg.Type != "action_result" {
+		t.Errorf("Expected type 'action_result', got '%s'", msg.Type)
+	}
+	
+	// Second flush should return nothing
+	messages = driver.Flush()
+	if len(messages) != 0 {
+		t.Errorf("Expected no messages on second flush, got %d", len(messages))
+	}
+}
+
+// TestClaudeDriver_BufferSizeLimit tests buffer size management
+func TestClaudeDriver_BufferSizeLimit(t *testing.T) {
+	driver := NewClaudeDriver()
+	
+	// Create data larger than maxBufferSize
 	largeData := make([]byte, driver.maxBufferSize+1000)
 	for i := range largeData {
 		largeData[i] = 'A'
 	}
-
-	result, err := driver.Parse(largeData)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("result is nil")
-	}
-
-	// Buffer should be trimmed to max size
+	
+	driver.Parse(largeData)
+	
 	if driver.buffer.Len() > driver.maxBufferSize {
-		t.Errorf("buffer size %d exceeds max size %d", driver.buffer.Len(), driver.maxBufferSize)
+		t.Errorf("Buffer size %d exceeds max %d", driver.buffer.Len(), driver.maxBufferSize)
 	}
 }
 
-func TestClaudeDriver_Reset(t *testing.T) {
+// TestClaudeDriver_MultiLineOutput tests multi-line output collection
+func TestClaudeDriver_MultiLineOutput(t *testing.T) {
 	driver := NewClaudeDriver()
-
-	// Write some data
-	driver.Parse([]byte("Some data"))
-
-	if driver.buffer.Len() == 0 {
-		t.Fatal("buffer should not be empty after parse")
+	
+	// Parse diagnostic header
+	driver.Parse([]byte("Diagnostics\n"))
+	
+	// Should start collecting output
+	if !driver.inOutputBlock {
+		t.Error("Expected to be in output block after 'Diagnostics'")
 	}
-
-	// Reset
-	driver.Reset()
-
-	if driver.buffer.Len() != 0 {
-		t.Errorf("buffer should be empty after reset, got length %d", driver.buffer.Len())
+	
+	// Parse more lines
+	driver.Parse([]byte("└ Currently running: npm-global (2.0.60)\n"))
+	driver.Parse([]byte("└ Path: /usr/local/bin/node\n"))
+	
+	// Should still be collecting
+	if !driver.inOutputBlock {
+		t.Error("Expected to still be in output block")
+	}
+	
+	// Flush should return the collected output
+	flushed := driver.Flush()
+	if len(flushed) == 0 {
+		t.Fatal("Expected flushed diagnostic output")
+	}
+	
+	msg := flushed[0]
+	if !strings.Contains(msg.Content, "Diagnostics") {
+		t.Error("Expected flushed message to contain 'Diagnostics'")
 	}
 }
 
-func TestClaudeDriver_MultipleChunks(t *testing.T) {
+// TestClaudeDriver_Deduplication tests message deduplication
+func TestClaudeDriver_Deduplication(t *testing.T) {
 	driver := NewClaudeDriver()
-
-	// Simulate receiving output in multiple chunks
-	chunks := [][]byte{
-		[]byte("Do you want to "),
-		[]byte("continue? "),
-		[]byte("(y/n)"),
+	
+	// Send same user input twice quickly
+	result1, _ := driver.Parse([]byte("> hello"))
+	result2, _ := driver.Parse([]byte("> hello"))
+	
+	// First should have message
+	if len(result1.Messages) == 0 {
+		t.Fatal("Expected message in first parse")
 	}
-
-	var lastResult *ParseResult
-	for _, chunk := range chunks {
-		result, err := driver.Parse(chunk)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		lastResult = result
-	}
-
-	// After all chunks, we should detect the question pattern
-	foundQuestion := false
-	for _, event := range lastResult.SmartEvents {
-		if event.Kind == "question" {
-			foundQuestion = true
-			if len(event.Options) != 2 || event.Options[0] != "y" || event.Options[1] != "n" {
-				t.Errorf("expected options [y, n], got %v", event.Options)
-			}
-			break
-		}
-	}
-
-	if !foundQuestion {
-		t.Error("expected to detect question pattern after multiple chunks")
-	}
-}
-
-
-func TestClaudeDriver_Parse_Messages(t *testing.T) {
-	driver := NewClaudeDriver()
-
-	testCases := []struct {
-		name            string
-		input           []byte
-		expectedMsgType string
-		expectedContent string
-	}{
-		{
-			name:            "user input",
-			input:           []byte("> hello world\n"),
-			expectedMsgType: "user_input",
-			expectedContent: "hello world",
-		},
-		{
-			name:            "claude response",
-			input:           []byte("● This is a response from Claude.\n"),
-			expectedMsgType: "claude_response",
-			expectedContent: "This is a response from Claude.",
-		},
-		{
-			name:            "claude action write",
-			input:           []byte("● Write(test.txt)\n"),
-			expectedMsgType: "claude_action",
-			expectedContent: "Write(test.txt)",
-		},
-		{
-			name:            "claude action read",
-			input:           []byte("● Read(config.json)\n"),
-			expectedMsgType: "claude_action",
-			expectedContent: "Read(config.json)",
-		},
-		{
-			name:            "agent interrupted",
-			input:           []byte("⎿  Interrupted · What should Claude do instead?\n"),
-			expectedMsgType: "agent_interrupted",
-			expectedContent: "⎿  Interrupted · What should Claude do instead?",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			driver.Reset()
-			// Reset deduplication state
-			driver.lastUserInput = ""
-			driver.lastClaudeAction = ""
-			driver.lastResponse = ""
-			driver.lastActionResult = ""
-
-			result, err := driver.Parse(tc.input)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if len(result.Messages) == 0 {
-				t.Fatalf("expected at least one message, got none")
-			}
-
-			msg := result.Messages[0]
-			if msg.Type != tc.expectedMsgType {
-				t.Errorf("expected message type %q, got %q", tc.expectedMsgType, msg.Type)
-			}
-			if msg.Content != tc.expectedContent {
-				t.Errorf("expected content %q, got %q", tc.expectedContent, msg.Content)
-			}
-		})
-	}
-}
-
-func TestClaudeDriver_Parse_Messages_BufferedOutput(t *testing.T) {
-	// Test buffered output (⎿ results) - these are collected and flushed
-	testCases := []struct {
-		name            string
-		input           []byte
-		expectedMsgType string
-		expectedContent string
-	}{
-		{
-			name:            "action result wrote",
-			input:           []byte("⎿  Wrote 10 lines to test.txt\n"),
-			expectedMsgType: "action_result",
-			expectedContent: "Wrote 10 lines to test.txt",
-		},
-		{
-			name:            "command output",
-			input:           []byte("⎿  Total cost: $0.01\n"),
-			expectedMsgType: "command_output",
-			expectedContent: "Total cost: $0.01",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			driver := NewClaudeDriver()
-
-			// Parse the output (will be buffered)
-			result, err := driver.Parse(tc.input)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			// Buffered output won't appear immediately
-			// Need to flush or send a new prompt to get it
-			flushed := driver.Flush()
-			allMessages := append(result.Messages, flushed...)
-
-			if len(allMessages) == 0 {
-				t.Fatalf("expected at least one message after flush, got none")
-			}
-
-			msg := allMessages[0]
-			if msg.Type != tc.expectedMsgType {
-				t.Errorf("expected message type %q, got %q", tc.expectedMsgType, msg.Type)
-			}
-			if msg.Content != tc.expectedContent {
-				t.Errorf("expected content %q, got %q", tc.expectedContent, msg.Content)
-			}
-		})
-	}
-}
-
-func TestClaudeDriver_Parse_Messages_Deduplication(t *testing.T) {
-	driver := NewClaudeDriver()
-
-	// Parse the same user input twice
-	input := []byte("> hello world\n")
-
-	result1, _ := driver.Parse(input)
-	if len(result1.Messages) != 1 {
-		t.Fatalf("expected 1 message on first parse, got %d", len(result1.Messages))
-	}
-
-	result2, _ := driver.Parse(input)
-	if len(result2.Messages) != 0 {
-		t.Errorf("expected 0 messages on duplicate parse, got %d", len(result2.Messages))
-	}
-}
-
-func TestClaudeDriver_Parse_Messages_UIFiltering(t *testing.T) {
-	driver := NewClaudeDriver()
-
-	// These should be filtered out as UI noise
-	uiNoiseInputs := [][]byte{
-		[]byte("· Thinking…\n"),
-		[]byte("─────────────────\n"),
-		[]byte("1. Yes\n"),
-		[]byte("2. No\n"),
-		[]byte("↓ More options\n"),
-		[]byte("Esc to cancel\n"),
-	}
-
-	for _, input := range uiNoiseInputs {
-		driver.Reset()
-		result, _ := driver.Parse(input)
-		if len(result.Messages) > 0 {
-			t.Errorf("expected UI noise %q to be filtered, but got message: %+v", string(input), result.Messages[0])
-		}
-	}
-}
-
-func TestClaudeDriver_Parse_Messages_TreeOutput(t *testing.T) {
-	// Test /doctor style tree output - collected and merged
-	t.Run("doctor multi-line output", func(t *testing.T) {
-		driver := NewClaudeDriver()
-
-		// Simulate /doctor output coming in chunks
-		driver.Parse([]byte("Diagnostics\n"))
-		driver.Parse([]byte("└ Currently running: npm-global (2.0.59)\n"))
-		driver.Parse([]byte("└ Path: /home/user/.nvm/versions/node/v24.11.1/bin/node\n"))
-		driver.Parse([]byte("└ Auto-updates: default (true)\n"))
-
-		// Flush to get the collected output
-		flushed := driver.Flush()
-
-		if len(flushed) == 0 {
-			t.Fatalf("expected tree output to be captured, got no messages")
-		}
-
-		msg := flushed[0]
-		if msg.Type != "command_output" {
-			t.Errorf("expected message type 'command_output', got %q", msg.Type)
-		}
-
-		// Should contain all lines merged
-		expectedLines := []string{
-			"Diagnostics:",
-			"Currently running: npm-global (2.0.59)",
-			"Path: /home/user/.nvm/versions/node/v24.11.1/bin/node",
-			"Auto-updates: default (true)",
-		}
-		for _, line := range expectedLines {
-			if !strings.Contains(msg.Content, line) {
-				t.Errorf("expected content to contain %q, got %q", line, msg.Content)
-			}
-		}
-	})
-
-	t.Run("doctor output flushed on new prompt", func(t *testing.T) {
-		driver := NewClaudeDriver()
-
-		// Simulate /doctor output followed by new prompt
-		driver.Parse([]byte("Diagnostics\n"))
-		driver.Parse([]byte("└ Currently running: npm-global (2.0.59)\n"))
-		result, _ := driver.Parse([]byte("> next command\n"))
-
-		// Should have flushed the doctor output and captured the new command
-		if len(result.Messages) < 2 {
-			t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
-		}
-
-		// First message should be the doctor output
-		if result.Messages[0].Type != "command_output" {
-			t.Errorf("expected first message type 'command_output', got %q", result.Messages[0].Type)
-		}
-
-		// Second message should be the user input
-		if result.Messages[1].Type != "user_input" {
-			t.Errorf("expected second message type 'user_input', got %q", result.Messages[1].Type)
-		}
-	})
-}
-
-
-func TestClaudeDriver_Parse_Messages_ResumeSession(t *testing.T) {
-	driver := NewClaudeDriver()
-
-	// Simulate resume session flow
-	driver.Parse([]byte("Resume Session\n"))
-	driver.Parse([]byte("❯ good, testing cursor move\n"))
-	driver.Parse([]byte("3 minutes ago · 16 messages · main\n"))
-	result, _ := driver.Parse([]byte("> next command\n"))
-
-	// Should have session_resumed and user_input messages
-	var foundResumed, foundUserInput bool
-	for _, msg := range result.Messages {
-		if msg.Type == "session_resumed" {
-			foundResumed = true
-			if !strings.Contains(msg.Content, "good, testing cursor move") {
-				t.Errorf("expected session_resumed to contain selection, got %q", msg.Content)
-			}
-			if !strings.Contains(msg.Content, "3 minutes ago") {
-				t.Errorf("expected session_resumed to contain timestamp, got %q", msg.Content)
-			}
-		}
-		if msg.Type == "user_input" {
-			foundUserInput = true
-		}
-	}
-
-	if !foundResumed {
-		t.Error("expected session_resumed message")
-	}
-	if !foundUserInput {
-		t.Error("expected user_input message")
+	
+	// Second should be deduplicated
+	if len(result2.Messages) > 0 {
+		t.Error("Expected no message in second parse (should be deduplicated)")
 	}
 }

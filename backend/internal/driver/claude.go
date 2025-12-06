@@ -239,7 +239,8 @@ func (d *ClaudeDriver) parseMessages(chunk []byte, result *ParseResult) {
 		}
 
 		// Check if we hit a new prompt (end of output block)
-		isNewPrompt := strings.HasPrefix(line, ">")
+		// This handles both "> command" and empty prompt "> " or ">"
+		isNewPrompt := strings.HasPrefix(line, ">") || line == ">"
 		if isNewPrompt && d.inOutputBlock {
 			d.flushOutputBlock(result)
 		}
@@ -508,4 +509,175 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|
 // stripANSI removes ANSI escape sequences from the input
 func (d *ClaudeDriver) stripANSI(data []byte) []byte {
 	return ansiPattern.ReplaceAll(data, []byte{})
+}
+
+// FormatInput formats an input action into bytes for PTY.
+// Handles Claude Code specific input patterns.
+func (d *ClaudeDriver) FormatInput(action InputAction) []byte {
+	switch action.Type {
+	case "text":
+		// Regular text input - send as-is
+		return []byte(action.Content)
+	case "command":
+		// Command input - add Enter at the end
+		return []byte(action.Content + KeyEnter)
+	case "key":
+		return d.formatKey(action.Content)
+	case "confirm":
+		// Confirmation - could be "y", "yes", "1", "2", etc.
+		return d.formatConfirmation(action.Content)
+	case "cancel":
+		// Cancel operation - send ESC
+		return []byte(KeyEscape)
+	case "interrupt":
+		// Interrupt - send Ctrl+C
+		return []byte(KeyCtrlC)
+	default:
+		return []byte(action.Content)
+	}
+}
+
+// RespondToEvent generates the appropriate input for a SmartEvent response.
+// Handles Claude Code's specific confirmation patterns.
+func (d *ClaudeDriver) RespondToEvent(event SmartEvent, response string) []byte {
+	switch event.Kind {
+	case "question":
+		// Standard (y/n) or (yes/no) question
+		return d.formatQuestionResponse(event, response)
+	case "claude_confirm":
+		// Claude Code's confirmation menu (1=Yes, 2=Yes allow all, Esc=Cancel)
+		return d.formatClaudeConfirmResponse(response)
+	default:
+		// Default: send response with Enter
+		return []byte(response + KeyEnter)
+	}
+}
+
+// formatKey converts a key name to its escape sequence
+func (d *ClaudeDriver) formatKey(keyName string) []byte {
+	switch strings.ToLower(keyName) {
+	case "enter", "return":
+		return []byte(KeyEnter)
+	case "escape", "esc":
+		return []byte(KeyEscape)
+	case "ctrl+c", "ctrlc":
+		return []byte(KeyCtrlC)
+	case "ctrl+d", "ctrld":
+		return []byte(KeyCtrlD)
+	case "backspace", "bs":
+		return []byte(KeyBackspace)
+	case "tab":
+		return []byte(KeyTab)
+	case "up", "arrowup":
+		return []byte(KeyUp)
+	case "down", "arrowdown":
+		return []byte(KeyDown)
+	case "left", "arrowleft":
+		return []byte(KeyLeft)
+	case "right", "arrowright":
+		return []byte(KeyRight)
+	default:
+		return []byte(keyName)
+	}
+}
+
+// formatConfirmation formats a confirmation response
+func (d *ClaudeDriver) formatConfirmation(response string) []byte {
+	switch strings.ToLower(response) {
+	case "y", "yes", "1":
+		// Option 1: Yes
+		return []byte("1")
+	case "all", "yes_all", "2":
+		// Option 2: Yes, allow all
+		return []byte("2")
+	case "n", "no", "cancel", "esc":
+		// Cancel
+		return []byte(KeyEscape)
+	default:
+		// Send as-is
+		return []byte(response)
+	}
+}
+
+// formatQuestionResponse formats a response to a (y/n) or (yes/no) question
+func (d *ClaudeDriver) formatQuestionResponse(event SmartEvent, response string) []byte {
+	resp := strings.ToLower(response)
+
+	// Check if options include full words or single letters
+	hasFullWords := false
+	for _, opt := range event.Options {
+		if len(opt) > 1 {
+			hasFullWords = true
+			break
+		}
+	}
+
+	if hasFullWords {
+		// (yes/no) style - send full word + Enter
+		if resp == "y" || resp == "yes" {
+			return []byte("yes" + KeyEnter)
+		} else if resp == "n" || resp == "no" {
+			return []byte("no" + KeyEnter)
+		}
+	} else {
+		// (y/n) style - send single letter + Enter
+		if resp == "y" || resp == "yes" {
+			return []byte("y" + KeyEnter)
+		} else if resp == "n" || resp == "no" {
+			return []byte("n" + KeyEnter)
+		}
+	}
+
+	// Default: send response + Enter
+	return []byte(response + KeyEnter)
+}
+
+// formatClaudeConfirmResponse formats a response to Claude Code's confirmation menu
+func (d *ClaudeDriver) formatClaudeConfirmResponse(response string) []byte {
+	switch strings.ToLower(response) {
+	case "1", "y", "yes":
+		// Option 1: Yes (just this once)
+		return []byte("1")
+	case "2", "all", "yes_all", "always":
+		// Option 2: Yes, allow all (for this session)
+		return []byte("2")
+	case "esc", "escape", "cancel", "n", "no":
+		// Cancel
+		return []byte(KeyEscape)
+	default:
+		// Try to parse as number
+		if len(response) == 1 && response[0] >= '1' && response[0] <= '9' {
+			return []byte(response)
+		}
+		// Default to cancel
+		return []byte(KeyEscape)
+	}
+}
+
+// SendCommand sends a command to Claude Code (text + Enter)
+func (d *ClaudeDriver) SendCommand(command string) []byte {
+	return []byte(command + KeyEnter)
+}
+
+// SendSlashCommand sends a slash command (e.g., /doctor, /resume)
+func (d *ClaudeDriver) SendSlashCommand(command string) []byte {
+	if !strings.HasPrefix(command, "/") {
+		command = "/" + command
+	}
+	return []byte(command + KeyEnter)
+}
+
+// SelectMenuItem selects a menu item by number or arrow navigation
+func (d *ClaudeDriver) SelectMenuItem(index int) []byte {
+	if index >= 1 && index <= 9 {
+		// Direct number selection
+		return []byte(string(rune('0' + index)))
+	}
+	// For larger indices, use arrow navigation
+	var result []byte
+	for i := 1; i < index; i++ {
+		result = append(result, []byte(KeyDown)...)
+	}
+	result = append(result, []byte(KeyEnter)...)
+	return result
 }

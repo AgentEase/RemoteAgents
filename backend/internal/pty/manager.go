@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/remote-agent-terminal/backend/internal/buffer"
 	"github.com/remote-agent-terminal/backend/internal/logger"
@@ -17,7 +18,36 @@ const (
 
 	// DefaultReadBufferSize is the buffer size for reading PTY output.
 	DefaultReadBufferSize = 4096
+
+	// Input handling constants for CLI applications like Claude
+	// These delays are necessary to prevent input buffer issues
+
+	// KeyCtrlU is the key sequence to clear the current input line
+	KeyCtrlU = "\x15"
+
+	// KeyEnter is the Enter key
+	KeyEnter = "\r"
+
+	// KeyCtrlC is the interrupt key
+	KeyCtrlC = "\x03"
+
+	// KeyEscape is the Escape key
+	KeyEscape = "\x1b"
+
+	// InputClearDelay is the delay after sending Ctrl+U to clear input (milliseconds)
+	InputClearDelay = 500
+
+	// InputTextDelay is the delay after sending command text before Enter (milliseconds)
+	InputTextDelay = 500
+
+	// DismissDelay is the delay for dismissing interactive output (milliseconds)
+	DismissDelay = 500
 )
+
+// sleepMs sleeps for the specified number of milliseconds
+func sleepMs(ms int) {
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
 
 // PTYProcess represents a running PTY process with associated resources.
 type PTYProcess struct {
@@ -208,6 +238,34 @@ func (m *Manager) Write(id string, data []byte) error {
 	return p.Write(data)
 }
 
+// WriteCommand writes a command to the PTY with proper input clearing.
+// This is designed for CLI applications like Claude that need input buffer management.
+func (m *Manager) WriteCommand(id string, command []byte) error {
+	m.mu.RLock()
+	p, ok := m.processes[id]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("process not found: %s", id)
+	}
+
+	return p.WriteCommand(command)
+}
+
+// DismissOutput sends Enter to dismiss interactive command output.
+// Use this after commands like /doctor or /cost that wait for user input.
+func (m *Manager) DismissOutput(id string) error {
+	m.mu.RLock()
+	p, ok := m.processes[id]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("process not found: %s", id)
+	}
+
+	return p.DismissOutput()
+}
+
 // Remove removes the process from the manager.
 // This should be called after the process has exited.
 func (m *Manager) Remove(id string) {
@@ -313,6 +371,105 @@ func (p *PTYProcess) Write(data []byte) error {
 	if p.Logger != nil {
 		p.Logger.WriteInput(data)
 	}
+
+	return nil
+}
+
+// WriteCommand writes a command to the PTY with proper input clearing.
+// This is designed for CLI applications like Claude that need input buffer management.
+//
+// The method follows this pattern:
+// 1. Clear input buffer with Ctrl+U (wait 500ms)
+// 2. Send command text without Enter (wait 500ms)
+// 3. Send Enter to execute
+//
+// This prevents commands from being appended to existing input.
+func (p *PTYProcess) WriteCommand(command []byte) error {
+	p.mu.RLock()
+	if p.closed {
+		p.mu.RUnlock()
+		return fmt.Errorf("process is closed")
+	}
+	p.mu.RUnlock()
+
+	// Step 1: Clear current input with Ctrl+U
+	if _, err := p.Process.PTY.Write([]byte(KeyCtrlU)); err != nil {
+		return fmt.Errorf("failed to clear input: %w", err)
+	}
+
+	// Log the clear
+	if p.Logger != nil {
+		p.Logger.WriteInput([]byte(KeyCtrlU))
+	}
+
+	// Wait for clear to take effect
+	sleepMs(InputClearDelay)
+
+	// Step 2: Determine if command has Enter at the end
+	hasEnter := len(command) > 0 && (command[len(command)-1] == '\r' || command[len(command)-1] == '\n')
+
+	var cmdText []byte
+	if hasEnter {
+		cmdText = command[:len(command)-1]
+	} else {
+		cmdText = command
+	}
+
+	// Send command text
+	if len(cmdText) > 0 {
+		if _, err := p.Process.PTY.Write(cmdText); err != nil {
+			return fmt.Errorf("failed to write command: %w", err)
+		}
+
+		// Log the command text
+		if p.Logger != nil {
+			p.Logger.WriteInput(cmdText)
+		}
+	}
+
+	// Wait before sending Enter
+	sleepMs(InputTextDelay)
+
+	// Step 3: Send Enter if the original command had it
+	if hasEnter {
+		if _, err := p.Process.PTY.Write([]byte(KeyEnter)); err != nil {
+			return fmt.Errorf("failed to send enter: %w", err)
+		}
+
+		// Log the Enter
+		if p.Logger != nil {
+			p.Logger.WriteInput([]byte(KeyEnter))
+		}
+	}
+
+	return nil
+}
+
+// DismissOutput sends Enter to dismiss interactive command output.
+// Use this after commands like /doctor or /cost that wait for user input.
+func (p *PTYProcess) DismissOutput() error {
+	p.mu.RLock()
+	if p.closed {
+		p.mu.RUnlock()
+		return fmt.Errorf("process is closed")
+	}
+	p.mu.RUnlock()
+
+	// Wait a bit before dismissing
+	sleepMs(DismissDelay)
+
+	// Send Enter to dismiss
+	if _, err := p.Process.PTY.Write([]byte(KeyEnter)); err != nil {
+		return fmt.Errorf("failed to dismiss output: %w", err)
+	}
+
+	// Log the Enter
+	if p.Logger != nil {
+		p.Logger.WriteInput([]byte(KeyEnter))
+	}
+
+	// Wait for dismiss to take effect
+	sleepMs(DismissDelay)
 
 	return nil
 }

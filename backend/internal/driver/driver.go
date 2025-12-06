@@ -23,6 +23,26 @@ type ParseResult struct {
 	Messages    []Message // Parsed conversation messages
 }
 
+// InputAction represents an action to send to the PTY
+type InputAction struct {
+	Type    string `json:"type"`    // "text", "key", "confirm", "cancel"
+	Content string `json:"content"` // Text content or key name
+}
+
+// Common key codes for PTY input
+const (
+	KeyEnter     = "\r"
+	KeyEscape    = "\x1b"
+	KeyCtrlC     = "\x03"
+	KeyCtrlD     = "\x04"
+	KeyBackspace = "\x7f"
+	KeyTab       = "\t"
+	KeyUp        = "\x1b[A"
+	KeyDown      = "\x1b[B"
+	KeyRight     = "\x1b[C"
+	KeyLeft      = "\x1b[D"
+)
+
 // AgentDriver is an interface for parsing CLI output and generating smart events.
 type AgentDriver interface {
 	// Name returns the name of the driver.
@@ -31,6 +51,14 @@ type AgentDriver interface {
 	// Parse processes a chunk of PTY output and returns parsed results.
 	// It returns the raw data along with any detected smart events.
 	Parse(chunk []byte) (*ParseResult, error)
+
+	// FormatInput formats an input action into bytes to send to PTY.
+	// This handles special keys, confirmations, and text input.
+	FormatInput(action InputAction) []byte
+
+	// RespondToEvent generates the appropriate input for a SmartEvent response.
+	// For example, responding "yes" to a (y/n) question or selecting option 1.
+	RespondToEvent(event SmartEvent, response string) []byte
 }
 
 // GenericDriver is a pass-through driver that doesn't perform any parsing.
@@ -53,4 +81,54 @@ func (d *GenericDriver) Parse(chunk []byte) (*ParseResult, error) {
 		RawData:     chunk,
 		SmartEvents: nil,
 	}, nil
+}
+
+// FormatInput formats an input action into bytes for PTY.
+func (d *GenericDriver) FormatInput(action InputAction) []byte {
+	switch action.Type {
+	case "text":
+		return []byte(action.Content)
+	case "key":
+		return formatKey(action.Content)
+	case "confirm":
+		return []byte(action.Content + KeyEnter)
+	case "cancel":
+		return []byte(KeyEscape)
+	default:
+		return []byte(action.Content)
+	}
+}
+
+// RespondToEvent generates input for a SmartEvent response.
+func (d *GenericDriver) RespondToEvent(event SmartEvent, response string) []byte {
+	// Generic driver just sends the response as-is with Enter
+	return []byte(response + KeyEnter)
+}
+
+// formatKey converts a key name to its escape sequence
+func formatKey(keyName string) []byte {
+	switch keyName {
+	case "enter":
+		return []byte(KeyEnter)
+	case "escape", "esc":
+		return []byte(KeyEscape)
+	case "ctrl+c":
+		return []byte(KeyCtrlC)
+	case "ctrl+d":
+		return []byte(KeyCtrlD)
+	case "backspace":
+		return []byte(KeyBackspace)
+	case "tab":
+		return []byte(KeyTab)
+	case "up":
+		return []byte(KeyUp)
+	case "down":
+		return []byte(KeyDown)
+	case "left":
+		return []byte(KeyLeft)
+	case "right":
+		return []byte(KeyRight)
+	default:
+		return []byte(keyName)
+	}
 }
