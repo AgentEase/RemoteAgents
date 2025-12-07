@@ -94,6 +94,26 @@ func CloseDB() error {
 
 // ResetDB resets the singleton for testing purposes.
 func ResetDB() {
+	if db != nil {
+		db.Close()
+	}
 	once = sync.Once{}
 	db = nil
+}
+
+// NewTestDB creates a new in-memory database for testing.
+// This bypasses the singleton pattern and creates a fresh database each time.
+func NewTestDB() (*sql.DB, error) {
+	testDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open test database: %w", err)
+	}
+
+	// Run schema migrations
+	if err := runMigrations(testDB); err != nil {
+		testDB.Close()
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	return testDB, nil
 }

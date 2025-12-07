@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -127,7 +128,10 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (*PTYProcess, er
 	}
 
 	// Prepare environment variables
-	var env []string
+	// Start with current process environment to inherit PATH, HOME, etc.
+	env := os.Environ()
+	
+	// Add or override with user-specified environment variables
 	if opts.Session.Env != nil {
 		for k, v := range opts.Session.Env {
 			env = append(env, fmt.Sprintf("%s=%s", k, v))
@@ -150,10 +154,55 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (*PTYProcess, er
 		}
 	}
 
+	// Parse command string into command and args
+	cmdParts := splitCommand(opts.Session.Command)
+	if len(cmdParts) == 0 {
+		if asciinemaLogger != nil {
+			asciinemaLogger.Close()
+		}
+		return nil, fmt.Errorf("invalid command")
+	}
+
+	command := cmdParts[0]
+	args := cmdParts[1:]
+
+	// Create working directory if it doesn't exist
+	if opts.Session.Workdir != "" {
+		// Expand ~ to home directory
+		workdir := opts.Session.Workdir
+		if len(workdir) > 0 && workdir[0] == '~' {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				if asciinemaLogger != nil {
+					asciinemaLogger.Close()
+				}
+				return nil, fmt.Errorf("failed to get home directory: %w", err)
+			}
+			if len(workdir) == 1 {
+				workdir = homeDir
+			} else if workdir[1] == '/' {
+				workdir = homeDir + workdir[1:]
+			}
+		}
+		
+		// Create the directory
+		if err := os.MkdirAll(workdir, 0755); err != nil {
+			if asciinemaLogger != nil {
+				asciinemaLogger.Close()
+			}
+			return nil, fmt.Errorf("failed to create working directory %s: %w", workdir, err)
+		}
+		
+		// Update the session workdir to the expanded path
+		opts.Session.Workdir = workdir
+	}
+
 	// Start the PTY process
 	process, err := Start(StartOptions{
-		Command:     opts.Session.Command,
+		Command:     command,
+		Args:        args,
 		Env:         env,
+		Dir:         opts.Session.Workdir,
 		InitialRows: opts.InitialRows,
 		InitialCols: opts.InitialCols,
 	})
@@ -539,4 +588,45 @@ func (p *PTYProcess) GetHistory() []byte {
 // PID returns the process ID.
 func (p *PTYProcess) PID() int {
 	return p.Process.PID()
+}
+
+// splitCommand splits a command string into command and arguments.
+// This handles basic quoting (single and double quotes).
+func splitCommand(cmd string) []string {
+	var parts []string
+	var current []rune
+	inQuote := false
+	quoteChar := rune(0)
+
+	for _, r := range cmd {
+		switch {
+		case r == '"' || r == '\'':
+			if inQuote {
+				if r == quoteChar {
+					inQuote = false
+					quoteChar = 0
+				} else {
+					current = append(current, r)
+				}
+			} else {
+				inQuote = true
+				quoteChar = r
+			}
+		case r == ' ' || r == '\t':
+			if inQuote {
+				current = append(current, r)
+			} else if len(current) > 0 {
+				parts = append(parts, string(current))
+				current = nil
+			}
+		default:
+			current = append(current, r)
+		}
+	}
+
+	if len(current) > 0 {
+		parts = append(parts, string(current))
+	}
+
+	return parts
 }

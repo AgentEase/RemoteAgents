@@ -79,7 +79,8 @@ func (d *GenericDriver) Name() string {
 func (d *GenericDriver) Parse(chunk []byte) (*ParseResult, error) {
 	return &ParseResult{
 		RawData:     chunk,
-		SmartEvents: nil,
+		SmartEvents: []SmartEvent{},
+		Messages:    []Message{},
 	}, nil
 }
 

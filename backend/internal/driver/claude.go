@@ -47,6 +47,11 @@ type ClaudeDriver struct {
 	outputStartTime   time.Time
 	outputBlockHeader string // "Diagnostics:" or first line of ⎿ output
 
+	// Response block collector for multi-line Claude responses
+	inResponseBlock   bool
+	responseLines     []string
+	responseStartTime time.Time
+
 	// Resume session tracking
 	inResumeMenu            bool
 	lastResumeSelection     string
@@ -294,21 +299,32 @@ func (d *ClaudeDriver) parseMessages(chunk []byte, result *ParseResult) {
 
 		// Detect Claude response: "● response text"
 		if matches := d.claudeResponseStart.FindStringSubmatch(line); matches != nil {
-			d.flushOutputBlock(result) // Flush any pending block
+			d.flushOutputBlock(result)   // Flush any pending output block
+			d.flushResponseBlock(result) // Flush any pending response block
 			response := strings.TrimSpace(matches[1])
 			// Skip if it's an action pattern (contains parentheses)
 			if strings.Contains(response, "(") && strings.Contains(response, ")") {
 				continue
 			}
-			if len(response) > 10 && response != d.lastResponse {
-				d.lastResponse = response
-				result.Messages = append(result.Messages, Message{
-					Timestamp: now,
-					Type:      "claude_response",
-					Content:   response,
-				})
+			// Start collecting response lines
+			d.inResponseBlock = true
+			d.responseStartTime = now
+			d.responseLines = []string{response}
+			continue
+		}
+
+		// If we're in a response block and hit a continuation line (starts with spaces)
+		if d.inResponseBlock && len(line) > 0 && (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) {
+			continuationText := strings.TrimSpace(line)
+			if len(continuationText) > 0 {
+				d.responseLines = append(d.responseLines, continuationText)
 			}
 			continue
+		}
+
+		// If we're in a response block and hit a non-continuation line, flush the response
+		if d.inResponseBlock {
+			d.flushResponseBlock(result)
 		}
 
 		// Detect action result or command output: "⎿ result"
@@ -336,6 +352,10 @@ func (d *ClaudeDriver) parseMessages(chunk []byte, result *ParseResult) {
 			d.outputLines = append(d.outputLines, line)
 		}
 	}
+
+	// Flush any pending response block at the end
+	// This ensures the last response in a chunk is not lost
+	d.flushResponseBlock(result)
 }
 
 // flushOutputBlock saves the collected output block as a single message
@@ -371,6 +391,28 @@ func (d *ClaudeDriver) flushOutputBlock(result *ParseResult) {
 	d.outputBlockHeader = ""
 }
 
+// flushResponseBlock saves the collected response block as a single message
+func (d *ClaudeDriver) flushResponseBlock(result *ParseResult) {
+	if !d.inResponseBlock || len(d.responseLines) == 0 {
+		return
+	}
+
+	fullResponse := strings.Join(d.responseLines, " ")
+
+	if len(fullResponse) > 10 && fullResponse != d.lastResponse {
+		d.lastResponse = fullResponse
+		result.Messages = append(result.Messages, Message{
+			Timestamp: d.responseStartTime,
+			Type:      "claude_response",
+			Content:   fullResponse,
+		})
+	}
+
+	// Reset response block state
+	d.inResponseBlock = false
+	d.responseLines = nil
+}
+
 // isUINoiseOrLoading checks if a line is UI noise or loading indicator
 func (d *ClaudeDriver) isUINoiseOrLoading(line string) bool {
 	// Don't filter out selected resume items (starts with ❯)
@@ -399,6 +441,7 @@ func (d *ClaudeDriver) isUINoiseOrLoading(line string) bool {
 	if strings.Contains(line, "shortcuts") ||
 		strings.Contains(line, "Tip:") ||
 		strings.Contains(line, "Thinking") ||
+		strings.Contains(line, "Ruminating") ||
 		strings.Contains(line, "Esc to") ||
 		strings.Contains(line, "Press Enter to continue") ||
 		strings.HasPrefix(line, "↓") ||
@@ -466,6 +509,8 @@ func (d *ClaudeDriver) Reset() {
 	d.inOutputBlock = false
 	d.outputLines = nil
 	d.outputBlockHeader = ""
+	d.inResponseBlock = false
+	d.responseLines = nil
 	d.inResumeMenu = false
 	d.lastResumeSelection = ""
 	d.resumeSelectionComplete = false

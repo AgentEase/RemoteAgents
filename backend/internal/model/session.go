@@ -20,6 +20,7 @@ type Session struct {
 	UserID      string            `json:"userId"`
 	Name        string            `json:"name"`
 	Command     string            `json:"command"`
+	Workdir     string            `json:"workdir,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
 	Status      SessionStatus     `json:"status"`
 	ExitCode    *int              `json:"exitCode,omitempty"`
@@ -61,6 +62,7 @@ func (s *Session) Duration() time.Duration {
 type CreateSessionRequest struct {
 	Command string            `json:"command" binding:"required"`
 	Name    string            `json:"name"`
+	Workdir string            `json:"workdir"`
 	Env     map[string]string `json:"env"`
 	UserID  string            `json:"-"`
 }

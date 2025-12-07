@@ -71,10 +71,17 @@ func Start(opts StartOptions) (*Process, error) {
 
 	// Prepare the command
 	cmd := exec.Command(opts.Command, opts.Args...)
-	cmd.Env = opts.Env
-	if cmd.Env == nil {
+	
+	// Set environment variables
+	// If opts.Env is provided, use it (it should already include inherited env vars)
+	// Otherwise, inherit from current process
+	if opts.Env != nil && len(opts.Env) > 0 {
+		cmd.Env = opts.Env
+	} else {
 		cmd.Env = os.Environ()
 	}
+	
+	// Set working directory
 	if opts.Dir != "" {
 		cmd.Dir = opts.Dir
 	}
